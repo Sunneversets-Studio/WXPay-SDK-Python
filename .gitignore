@@ -1,0 +1,7 @@
+.vscode
+.idea
+*.pyc
+build
+dist
+test
+pywxpay.egg-info
