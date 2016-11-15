@@ -10,9 +10,9 @@ setup(
     version='0.1',
     description='python wxpay sdk.',
     long_description=open('README.rst').read(),
-    author='',
+    author='wxpay',
     url='https://github.com/wxpay/WXPay-SDK-Python',
-    author_email='',
+    author_email='wxpay1888@foxmail.com',
     license='BSD',
     platforms='any',
     classifiers=[
