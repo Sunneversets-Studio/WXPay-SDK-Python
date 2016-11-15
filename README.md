@@ -29,16 +29,13 @@
 
 ## 安装
 
-安装依赖：
+方式1：
 ```
 $ sudo pip install -r requirements.txt
-```
-
-安装SDK：
-```
 $ sudo python setup.py install
 ```
-或者
+
+方式2:
 ```
 $ sudo pip install pywxpay
 ```
