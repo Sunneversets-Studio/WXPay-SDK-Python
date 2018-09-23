@@ -2,11 +2,13 @@
 # wxpay sdk
 
 import hashlib
+import hmac
 import copy
 import uuid
 import requests
 import sys
-import xmltodict
+
+import xml.etree.ElementTree as ElementTree
 
 
 try:
@@ -55,88 +57,170 @@ else:
         return isinstance(v, text_type)
 
 
-_SIGN = 'sign'
-_FAIL = 'FAIL'
-_SUCCESS = 'SUCCESS'
+_DEFAULT_TIMEOUT = 8000  # 微秒
 
-_default_timeout = 2  # seconds
-_micropay_url = 'https://api.mch.weixin.qq.com/pay/micropay'
-_unifiedorder_url = 'https://api.mch.weixin.qq.com/pay/unifiedorder'
-_orderquery_url = 'https://api.mch.weixin.qq.com/pay/orderquery'
-_reverse_url = 'https://api.mch.weixin.qq.com/secapi/pay/reverse'
-_closeorder_url = 'https://api.mch.weixin.qq.com/pay/closeorder'
-_refund_url = 'https://api.mch.weixin.qq.com/secapi/pay/refund'
-_refundquery_url = 'https://api.mch.weixin.qq.com/pay/refundquery'
-_downloadbill_url = 'https://api.mch.weixin.qq.com/pay/downloadbill'
-_report_url = 'https://api.mch.weixin.qq.com/pay/report'
-_shorturl_url = 'https://api.mch.weixin.qq.com/tools/shorturl'
-_authcodetoopenid_url = 'https://api.mch.weixin.qq.com/tools/authcodetoopenid'
+
+class WXPayConstants(object):
+    # SUCCESS, FAIL
+    SUCCESS = "SUCCESS"
+    FAIL = "FAIL"
+
+    # 签名类型
+    SIGN_TYPE_HMACSHA256 = "HMAC-SHA256"
+    SIGN_TYPE_MD5 = "MD5"
+
+    # 字段
+    FIELD_SIGN = "sign"
+    FIELD_SIGN_TYPE = "sign_type"
+
+    # URL
+    MICROPAY_URL = "https://api.mch.weixin.qq.com/pay/micropay"
+    UNIFIEDORDER_URL = "https://api.mch.weixin.qq.com/pay/unifiedorder"
+    ORDERQUERY_URL = "https://api.mch.weixin.qq.com/pay/orderquery"
+    REVERSE_URL = "https://api.mch.weixin.qq.com/secapi/pay/reverse"
+    CLOSEORDER_URL = "https://api.mch.weixin.qq.com/pay/closeorder"
+    REFUND_URL = "https://api.mch.weixin.qq.com/secapi/pay/refund"
+    REFUNDQUERY_URL = "https://api.mch.weixin.qq.com/pay/refundquery"
+    DOWNLOADBILL_URL = "https://api.mch.weixin.qq.com/pay/downloadbill"
+    REPORT_URL = "https://api.mch.weixin.qq.com/payitil/report"
+    SHORTURL_URL = "https://api.mch.weixin.qq.com/tools/shorturl"
+    AUTHCODETOOPENID_URL = "https://api.mch.weixin.qq.com/tools/authcodetoopenid"
+
+    # Sandbox URL
+    SANDBOX_MICROPAY_URL = "https://api.mch.weixin.qq.com/sandboxnew/pay/micropay"
+    SANDBOX_UNIFIEDORDER_URL = "https://api.mch.weixin.qq.com/sandboxnew/pay/unifiedorder"
+    SANDBOX_ORDERQUERY_URL = "https://api.mch.weixin.qq.com/sandboxnew/pay/orderquery"
+    SANDBOX_REVERSE_URL = "https://api.mch.weixin.qq.com/sandboxnew/secapi/pay/reverse"
+    SANDBOX_CLOSEORDER_URL = "https://api.mch.weixin.qq.com/sandboxnew/pay/closeorder"
+    SANDBOX_REFUND_URL = "https://api.mch.weixin.qq.com/sandboxnew/secapi/pay/refund"
+    SANDBOX_REFUNDQUERY_URL = "https://api.mch.weixin.qq.com/sandboxnew/pay/refundquery"
+    SANDBOX_DOWNLOADBILL_URL = "https://api.mch.weixin.qq.com/sandboxnew/pay/downloadbill"
+    SANDBOX_REPORT_URL = "https://api.mch.weixin.qq.com/sandboxnew/payitil/report"
+    SANDBOX_SHORTURL_URL = "https://api.mch.weixin.qq.com/sandboxnew/tools/shorturl"
+    SANDBOX_AUTHCODETOOPENID_URL = "https://api.mch.weixin.qq.com/sandboxnew/tools/authcodetoopenid"
 
 
 class WXPayUtil(object):
 
     @staticmethod
-    def dict2xml(data_dict):
-        """ dict to xml"""
-        return as_text( xmltodict.unparse({'xml': data_dict}, pretty=True) )
-    
-    @staticmethod
-    def xml2dict(xml_str):
-        """ xml to dict """
-        return xmltodict.parse(xml_str)['xml']
+    def dict2xml(data):
+        """dict to xml
+
+        @:param data: Dictionary
+        @:return: string
+        """
+        # return as_text( xmltodict.unparse({'xml': data_dict}, pretty=True) )
+        root = ElementTree.Element('xml')
+        for k in data:
+            v = data[k]
+            child = ElementTree.SubElement(root, k)
+            child.text = str(v)
+        return as_text(ElementTree.tostring(root, encoding='utf-8'))
 
     @staticmethod
-    def generate_signature(data_dict, key_str):
-        """ 生成签名 """
-        key_str = as_text(key_str)
-        data_key_list = data_dict.keys()
+    def xml2dict(xml_str):
+        """xml to dict
+
+        @:param xml_str: string in XML format
+        @:return: Dictionary
+        """
+        # return xmltodict.parse(xml_str)['xml']
+        root = ElementTree.fromstring(xml_str)
+        assert as_text(root.tag) == as_text('xml')
+        result = {}
+        for child in root:
+            tag = child.tag
+            text = child.text
+            result[tag] = text
+        return result
+
+    @staticmethod
+    def generate_signature(data, key, sign_type=WXPayConstants.SIGN_TYPE_MD5):
+        """生成签名
+
+        :param data: dict
+        :param key: string. API key
+        :param sign_type: string
+        :return string
+        """
+        key = as_text(key)
+        data_key_list = data.keys()
         data_key_list = sorted(data_key_list)  # 排序！
         combine_str = as_text('')
         for k in data_key_list:
-            v = data_dict[k]
-            if _SIGN == k:
+            v = data[k]
+            if k == WXPayConstants.FIELD_SIGN:
                 continue
             if v is None or len(str(v)) == 0:
                 continue
             combine_str = combine_str + as_text(str(k)) + as_text('=') + as_text(str(v)) + as_text('&')
-        combine_str = combine_str + as_text('key=') + key_str
-        hash_md5 = hashlib.md5(combine_str.encode('utf-8'))
-        return hash_md5.hexdigest().upper()
+        combine_str = combine_str + as_text('key=') + key
+        if sign_type == WXPayConstants.SIGN_TYPE_MD5:
+            return WXPayUtil.md5(combine_str)
+        elif sign_type == WXPayConstants.SIGN_TYPE_HMACSHA256:
+            return WXPayUtil.hmacsha256(combine_str, key)
+        else:
+            raise Exception("Invalid sign_type: {}".format(sign_type))
 
     @staticmethod
-    def is_signature_valid(xml_data, key_str):
+    def is_signature_valid(data, key, sign_type=WXPayConstants.SIGN_TYPE_MD5):
+        """ 验证xml中的签名
+
+        :param data: dict
+        :param key: string. API key
+        :param sign_type: string
+        :return: bool
         """
-        验证xml中的签名
-        :param xml_data: xml格式的字符串，或者dict类型
-        :param key_str: 微信支付的KEY，用于签名
-        :return:
-        """
-        key_str = as_text(key_str)
-        if isinstance(xml_data, dict):
-            data_dict = xml_data
-        else:
-            data_dict = WXPayUtil.xml2dict(as_text(xml_data))
-        if _SIGN not in data_dict:
+        if WXPayConstants.FIELD_SIGN not in data:
             return False
-        sign = WXPayUtil.generate_signature(data_dict, key_str)
-        if sign == data_dict[_SIGN]:
+        sign = WXPayUtil.generate_signature(data, key, sign_type)
+        if sign == data[WXPayConstants.FIELD_SIGN]:
             return True
         return False
 
     @staticmethod
-    def generate_signed_xml(data_dict, key_str):
-        """ 生成带有签名的xml """
-        key_str = as_text(key_str)
-        new_data_dict = copy.deepcopy(data_dict)
-        sign = WXPayUtil.generate_signature(data_dict, key_str)
-        new_data_dict[_SIGN] = sign
+    def generate_signed_xml(data, key, sign_type=WXPayConstants.SIGN_TYPE_MD5):
+        """ 生成带有签名的xml
+
+        :param data: dict
+        :param key: string. API key
+        :param sign_type: string
+        :return: xml
+        """
+        key = as_text(key)
+        new_data_dict = copy.deepcopy(data)
+        sign = WXPayUtil.generate_signature(data, key, sign_type)
+        new_data_dict[WXPayConstants.FIELD_SIGN] = sign
         return WXPayUtil.dict2xml( new_data_dict )
-    
+
     @staticmethod
     def generate_nonce_str():
-        """ 随机字符串 """
+        """ 生成随机字符串
+
+        :return string
+        """
         r = uuid.uuid1().hex.replace('-', '')
         return as_text(r)
+
+    @staticmethod
+    def md5(source):
+        """ generate md5 of source. the result is Uppercase and Hexdigest.
+
+        @:param source: string
+        @:return: string
+        """
+        hash_md5 = hashlib.md5(as_text(source).encode('utf-8'))
+        return hash_md5.hexdigest().upper()
+
+    @staticmethod
+    def hmacsha256(source, key):
+        """ generate hmacsha256 of source. the result is Uppercase and Hexdigest.
+
+        @:param source: string
+        @:param key: string
+        @:return: string
+        """
+        return hmac.new(as_text(key).encode('utf-8'), as_text(source).encode('utf-8'), hashlib.sha256).hexdigest().upper()
 
 
 class SignInvalidException(Exception):
@@ -149,9 +233,11 @@ class SignInvalidException(Exception):
 
 class WXPay(object):
 
-    def __init__(self, app_id, mch_id, key, cert_pem_path, key_pem_path, timeout=_default_timeout):
-        """
-        timeout: 单位秒，可以为浮点数
+    def __init__(self, app_id, mch_id, key, cert_pem_path, key_pem_path, timeout=_DEFAULT_TIMEOUT,
+                 sign_type=WXPayConstants.SIGN_TYPE_MD5, use_sandbox=False):
+        """ 初始化
+
+        :param timeout: 网络请求超时时间，单位毫秒
         """
         self.app_id = app_id
         self.mch_id = mch_id
@@ -159,173 +245,282 @@ class WXPay(object):
         self.cert_pem_path = cert_pem_path
         self.key_pem_path = key_pem_path
         self.timeout = timeout
-    
-    def _process_response_xml(self, resp_xml):
+        self.sign_type = sign_type
+        self.use_sandbox = use_sandbox
+
+    def fill_request_data(self, data):
+        """data中添加 appid、mch_id、nonce_str、sign_type、sign
+
+        :param data: dict
+        :return: dict
+        """
+        new_data_dict = copy.deepcopy(data)
+        new_data_dict['appid'] = self.app_id
+        new_data_dict['mch_id'] = self.mch_id
+        new_data_dict['nonce_str'] = WXPayUtil.generate_nonce_str()
+        if self.sign_type == WXPayConstants.SIGN_TYPE_MD5:
+            new_data_dict['sign_type'] = WXPayConstants.SIGN_TYPE_MD5
+        elif self.sign_type == WXPayConstants.SIGN_TYPE_HMACSHA256:
+            new_data_dict['sign_type'] = WXPayConstants.SIGN_TYPE_HMACSHA256
+        else:
+            raise Exception("Invalid sign_type: {}".format(self.sign_type))
+
+        new_data_dict['sign'] = WXPayUtil.generate_signature(new_data_dict, self.key, self.sign_type)
+        return new_data_dict
+
+    def is_response_signature_valid(self, data):
+        """检查微信响应的xml数据中签名是否合法，先转换成dict
+
+        :param data: dict类型
+        :return: bool
+        """
+        return WXPayUtil.is_signature_valid(data, self.key, self.sign_type)
+
+    def is_pay_result_notify_signature_valid(self, data):
+        """支付结果通知中的签名是否合法
+
+        :param data: dict
+        :return: bool
+        """
+        sign_type = data.get(WXPayConstants.FIELD_SIGN, WXPayConstants.SIGN_TYPE_MD5)
+        if len(sign_type.trim()) == 0:
+            sign_type = WXPayConstants.SIGN_TYPE_MD5
+        if sign_type not in [WXPayConstants.SIGN_TYPE_MD5, WXPayConstants.SIGN_TYPE_HMACSHA256]:
+            raise Exception("invalid sign_type: {} in pay result notify".format(sign_type))
+        return WXPayUtil.is_signature_valid(data, self.key, sign_type)
+
+    def request_with_cert(self, url, data, timeout=None):
+        """ """
+        req_body = WXPayUtil.dict2xml(data).encode('utf-8')
+        req_headers = {'Content-Type': 'application/xml'}
+        _timeout = self.timeout if timeout is None else timeout
+        resp = requests.post(url,
+                             data=req_body,
+                             headers=req_headers,
+                             timeout=_timeout / 1000.0,
+                             cert=(self.cert_pem_path, self.key_pem_path),
+                             verify=True)
+        resp.encoding = 'utf-8'
+        return resp.text
+
+        # if resp.status_code == 200:
+        #     # print as_text(resp.text)
+        #     return as_text(resp.text)
+        # raise Exception('HTTP response code is not 200')
+
+    def request_without_cert(self, url, data, timeout=None):
+        """ 不带证书的请求
+
+        :param url: string
+        :param data: dict
+        :param timeout: int. ms
+        :return:
+        """
+        req_body = WXPayUtil.dict2xml(data).encode('utf-8')
+        req_headers = {'Content-Type': 'application/xml'}
+        _timeout = self.timeout if timeout is None else timeout
+        resp = requests.post(url,
+                             data=req_body,
+                             headers=req_headers,
+                             timeout=_timeout / 1000.0)
+        resp.encoding = 'utf-8'
+        return as_text(resp.text)
+
+        # if resp.status_code == 200:
+        #     # print as_text(resp.text)
+        #     return as_text(resp.text)
+        # raise Exception('HTTP response code is not 200')
+
+    def process_response_xml(self, resp_xml):
+        """ 处理微信支付返回的 xml 格式数据
+
+        :param resp_xml:
+        :return:
+        """
         resp_dict = WXPayUtil.xml2dict(resp_xml)
         if 'return_code' in resp_dict:
             return_code = resp_dict.get('return_code')
         else:
             raise Exception('no return_code in response data: {}'.format(resp_xml))
 
-        if return_code == _FAIL:
+        if return_code == WXPayConstants.FAIL:
             return resp_dict
-        elif return_code == _SUCCESS:
-            if self.is_signature_valid(resp_dict):
+        elif return_code == WXPayConstants.SUCCESS:
+            if self.is_response_signature_valid(resp_dict):
                 return resp_dict
             else:
-                raise SignInvalidException('invalid sign of response data: {}'.format(resp_xml))
+                raise SignInvalidException('invalid sign in response data: {}'.format(resp_xml))
         else:
-            raise Exception('return_code value {} is invalid of response data: {}'.format(return_code, resp_xml))
+            raise Exception('return_code value {} is invalid in response data: {}'.format(return_code, resp_xml))
 
-    def micropay(self, data_dict, timeout=None):
-        """ 
-        作用：提交刷卡支付
-        场景：刷卡支付
-        """
-        _timeout = self.timeout if timeout is None else timeout
-        resp_xml = self.request_without_cert(_micropay_url, data_dict, _timeout)
-        return self._process_response_xml(resp_xml)
-    
-    def unifiedorder(self, data_dict, timeout=None):
-        """ 
-        作用：统一下单
-        场景：公共号支付、扫码支付、APP支付
-        """
-        _timeout = self.timeout if timeout is None else timeout
-        resp_xml = self.request_without_cert(_unifiedorder_url, data_dict, _timeout)
-        return self._process_response_xml(resp_xml)
-    
-    def orderquery(self, data_dict, timeout=None):
-        """
-        作用：查询订单
-        场景：刷卡支付、公共号支付、扫码支付、APP支付
-        """
-        _timeout = self.timeout if timeout is None else timeout
-        resp_xml = self.request_without_cert(_orderquery_url, data_dict, _timeout)
-        return self._process_response_xml(resp_xml)
+    def micropay(self, data, timeout=None):
+        """ 提交刷卡支付
 
-    def reverse(self, data_dict, timeout=None):
-        """
-        作用：撤销订单
-        场景：刷卡支付
+        :param data: dict
+        :param timeout: int
+        :return: dict
         """
         _timeout = self.timeout if timeout is None else timeout
-        resp_xml = self.request_with_cert(_reverse_url, data_dict, _timeout)
-        return self._process_response_xml(resp_xml)
+        if self.use_sandbox:
+            url = WXPayConstants.SANDBOX_MICROPAY_URL
+        else:
+            url = WXPayConstants.MICROPAY_URL
 
-    def closeorder(self, data_dict, timeout=None):
-        """
-        作用：关闭订单
-        场景：公共号支付、扫码支付、APP支付
-        """
-        _timeout = self.timeout if timeout is None else timeout
-        resp_xml = self.request_without_cert(_closeorder_url, data_dict, _timeout)
-        return self._process_response_xml(resp_xml)
+        resp_xml = self.request_without_cert(url, self.fill_request_data(data), _timeout)
+        return self.process_response_xml(resp_xml)
 
-    def refund(self, data_dict, timeout=None):
-        """
-        作用：申请退款
-        场景：刷卡支付、公共号支付、扫码支付、APP支付
-        """
-        _timeout = self.timeout if timeout is None else timeout
-        resp_xml = self.request_with_cert(_refund_url, data_dict, _timeout)
-        return self._process_response_xml(resp_xml)
+    def unifiedorder(self, data, timeout=None):
+        """ 统一下单
 
-    def refundquery(self, data_dict, timeout=None):
-        """
-        作用：退款查询
-        场景：刷卡支付、公共号支付、扫码支付、APP支付
+        :param data: dict
+        :param timeout: int
+        :return: dict
         """
         _timeout = self.timeout if timeout is None else timeout
-        resp_xml = self.request_without_cert(_refundquery_url, data_dict, _timeout)
-        return self._process_response_xml(resp_xml)
+        if self.use_sandbox:
+            url = WXPayConstants.SANDBOX_UNIFIEDORDER_URL
+        else:
+            url = WXPayConstants.UNIFIEDORDER_URL
+        resp_xml = self.request_without_cert(url, self.fill_request_data(data), _timeout)
+        return self.process_response_xml(resp_xml)
 
-    def downloadbill(self, data_dict, timeout=None):
-        """
-        作用：对账单下载（成功时返回对账单数据，失败时返回XML格式数据）
-        场景：刷卡支付、公共号支付、扫码支付、APP支付
+    def orderquery(self, data, timeout=None):
+        """ 查询订单
+
+        :param data: dict
+        :param timeout: int
+        :return: dict
         """
         _timeout = self.timeout if timeout is None else timeout
-        resp = self.request_without_cert(_downloadbill_url, data_dict, _timeout).strip()
-        if resp.startswith('<'): # 是xml，下载出错了
+        if self.use_sandbox:
+            url = WXPayConstants.SANDBOX_ORDERQUERY_URL
+        else:
+            url = WXPayConstants.ORDERQUERY_URL
+        resp_xml = self.request_without_cert(url, self.fill_request_data(data), _timeout)
+        return self.process_response_xml(resp_xml)
+
+    def reverse(self, data, timeout=None):
+        """ 撤销订单
+
+        :param data: dict
+        :param timeout: int
+        :return: dict
+        """
+        _timeout = self.timeout if timeout is None else timeout
+        if self.use_sandbox:
+            url = WXPayConstants.SANDBOX_REVERSE_URL
+        else:
+            url = WXPayConstants.REVERSE_URL
+        resp_xml = self.request_with_cert(url, self.fill_request_data(data), _timeout)
+        return self.process_response_xml(resp_xml)
+
+    def closeorder(self, data, timeout=None):
+        """ 关闭订单
+
+        :param data: dict
+        :param timeout: int
+        :return: dict
+        """
+        _timeout = self.timeout if timeout is None else timeout
+        if self.use_sandbox:
+            url = WXPayConstants.SANDBOX_CLOSEORDER_URL
+        else:
+            url = WXPayConstants.CLOSEORDER_URL
+        resp_xml = self.request_without_cert(url, self.fill_request_data(data), _timeout)
+        return self.process_response_xml(resp_xml)
+
+    def refund(self, data, timeout=None):
+        """ 申请退款
+
+        :param data: dict
+        :param timeout: int
+        :return: dict
+        """
+        if self.use_sandbox:
+            url = WXPayConstants.SANDBOX_REFUND_URL
+        else:
+            url = WXPayConstants.REFUND_URL
+        _timeout = self.timeout if timeout is None else timeout
+        resp_xml = self.request_with_cert(url, self.fill_request_data(data), _timeout)
+        return self.process_response_xml(resp_xml)
+
+    def refundquery(self, data, timeout=None):
+        """ 查询退款
+
+        :param data: dict
+        :param timeout: int
+        :return: dict
+        """
+        _timeout = self.timeout if timeout is None else timeout
+        if self.use_sandbox:
+            url = WXPayConstants.SANDBOX_REFUNDQUERY_URL
+        else:
+            url = WXPayConstants.REFUNDQUERY_URL
+        resp_xml = self.request_without_cert(url, self.fill_request_data(data), _timeout)
+        return self.process_response_xml(resp_xml)
+
+    def downloadbill(self, data, timeout=None):
+        """ 下载对账单。官方文档中指出成功时返回对账单数据，失败时返回XML格式数据。
+        这里做一层封装，都返回dict。
+
+        :param data: dict
+        :param timeout: int
+        :return: dict
+        """
+        _timeout = self.timeout if timeout is None else timeout
+        if self.use_sandbox:
+            url = WXPayConstants.SANDBOX_DOWNLOADBILL_URL
+        else:
+            url = WXPayConstants.DOWNLOADBILL_URL
+        resp = self.request_without_cert(url, self.fill_request_data(data), _timeout).strip()
+        if resp.startswith('<'):  # 是XML，下载出错了
             resp_dict = WXPayUtil.xml2dict(resp)
         else:  # 下载成功，加一层封装
             resp_dict = {'return_code': 'SUCCESS', 'return_msg': '', 'data': resp}
         return resp_dict
 
+    def report(self, data, timeout=None):
+        """ 交易保障
 
-    def report(self, data_dict, timeout=None):
-        """
-        作用：交易保障
-        场景：刷卡支付、公共号支付、扫码支付、APP支付
+        :param data: dict
+        :param timeout: int
+        :return: dict
         """
         _timeout = self.timeout if timeout is None else timeout
-        resp_xml = self.request_without_cert(_report_url, data_dict, _timeout)
+        if self.use_sandbox:
+            url = WXPayConstants.SANDBOX_REPORT_URL
+        else:
+            url = WXPayConstants.REPORT_URL
+        resp_xml = self.request_without_cert(url, self.fill_request_data(data), _timeout)
         resp_dict = WXPayUtil.xml2dict(resp_xml)
         return resp_dict
 
-    def shorturl(self, data_dict, timeout=None):
-        """
-        作用：转换短链接
-        场景：刷卡支付、扫码支付
+    def shorturl(self, data, timeout=None):
+        """ 转换短链接
+
+        :param data: dict
+        :param timeout: int
+        :return: dict
         """
         _timeout = self.timeout if timeout is None else timeout
-        resp_xml = self.request_without_cert(_shorturl_url, data_dict, _timeout)
-        return self._process_response_xml(resp_xml)
+        if self.use_sandbox:
+            url = WXPayConstants.SANDBOX_SHORTURL_URL
+        else:
+            url = WXPayConstants.SHORTURL_URL
+        resp_xml = self.request_without_cert(url, self.fill_request_data(data), _timeout)
+        return self.process_response_xml(resp_xml)
 
-    def authcodetoopenid(self, data_dict, timeout=None):
-        """
-        作用：授权码查询OPENID接口
-        场景：刷卡支付
+    def authcodetoopenid(self, data, timeout=None):
+        """ 授权码查询OPENID接口
+
+        :param data: dict
+        :param timeout: int
+        :return: dict
         """
         _timeout = self.timeout if timeout is None else timeout
-        resp_xml = self.request_without_cert(_authcodetoopenid_url, data_dict, _timeout)
-        return self._process_response_xml(resp_xml)
-
-    def is_signature_valid(self, xml_data):
-        """
-        检查xml中签名是否合法
-        :param xml_data: xml格式的字符串、或者dict类型
-        :return:
-        """
-        return WXPayUtil.is_signature_valid(xml_data, self.key)
-    
-    def make_request_body(self, data_dict):
-        """ 生成请求体 """
-        new_data_dict = copy.deepcopy(data_dict)
-        new_data_dict['appid'] = self.app_id
-        new_data_dict['mch_id'] = self.mch_id
-        new_data_dict['nonce_str'] = WXPayUtil.generate_nonce_str()
-        return WXPayUtil.generate_signed_xml(new_data_dict, self.key)
-
-    def request_with_cert(self, url_str, data_dict, timeout):
-        """ """
-        # print 'wxpay timeout:', timeout
-        req_body = self.make_request_body(data_dict).encode('utf-8')
-        req_headers = {'Content-Type': 'application/xml'}
-        resp = requests.post(url_str, 
-                            data=req_body, 
-                            headers=req_headers, 
-                            timeout=timeout,
-                            cert=(self.cert_pem_path, self.key_pem_path),
-                            verify=True)
-        resp.encoding = 'utf-8'
-        if resp.status_code == 200:
-            # print as_text(resp.text)
-            return as_text(resp.text)
-        raise Exception('HTTP response code is not 200')
-
-    def request_without_cert(self, url_str, data_dict, timeout):
-        """ """
-        # print 'wxpay timeout:', timeout
-        req_body = self.make_request_body(data_dict).encode('utf-8')
-        req_headers = {'Content-Type': 'application/xml'}
-        resp = requests.post(url_str,
-                             data=req_body,
-                             headers=req_headers,
-                             timeout=timeout)
-        resp.encoding = 'utf-8'
-        if resp.status_code == 200:
-            # print as_text(resp.text)
-            return as_text(resp.text)
-        raise Exception('HTTP response code is not 200')
+        if self.use_sandbox:
+            url = WXPayConstants.SANDBOX_AUTHCODETOOPENID_URL
+        else:
+            url = WXPayConstants.AUTHCODETOOPENID_URL
+        resp_xml = self.request_without_cert(url, self.fill_request_data(data), _timeout)
+        return self.process_response_xml(resp_xml)
